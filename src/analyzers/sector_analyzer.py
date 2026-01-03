@@ -6,7 +6,7 @@ from vnstock import Vnstock
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from technical_indicators import TechnicalIndicators
+from src.core.technical_indicators import TechnicalIndicators
 from typing import Dict, List, Tuple
 import warnings
 import logging
