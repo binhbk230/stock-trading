@@ -9,12 +9,12 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import time
 
-from main import StockAnalyzer
-from batch_analyzer import BatchAnalyzer
-from vnindex_analyzer import VNIndexAnalyzer
-from sector_analyzer import SectorAnalyzer
-from portfolio_manager import PortfolioManager, verify_login, get_user_info, load_users_config
-from top_stocks import (
+from src.core.stock_analyzer import StockAnalyzer
+from src.analyzers.batch_analyzer import BatchAnalyzer
+from src.analyzers.vnindex_analyzer import VNIndexAnalyzer
+from src.analyzers.sector_analyzer import SectorAnalyzer
+from src.core.portfolio_manager import PortfolioManager, verify_login, get_user_info, load_users_config
+from src.utils.top_stocks import (
     TOP_100_STOCKS, VN30_STOCKS, MIDCAP_STOCKS, SMALLCAP_STOCKS,
     get_sector, get_all_sectors, get_stocks_by_sector, SECTOR_MAPPING
 )
@@ -941,11 +941,7 @@ elif mode == "📊 Phân tích hàng loạt":
             selected_sector = st.selectbox("Chọn ngành:", get_all_sectors())
             selected_symbols = get_stocks_by_sector(selected_sector)
     
-    if selected_symbols:
-        st.info(f"📌 Sẽ phân tích **{len(selected_symbols)}** cổ phiếu: {', '.join(selected_symbols[:10])}{'...' if len(selected_symbols) > 10 else ''}")
-    else:
-        st.warning("⚠️ Vui lòng nhập ít nhất 1 mã cổ phiếu")
-    
+    # Hiển thị thông tin số lượng cổ phiếu
     if selected_symbols:
         st.info(f"📌 Sẽ phân tích **{len(selected_symbols)}** cổ phiếu: {', '.join(selected_symbols[:10])}{'...' if len(selected_symbols) > 10 else ''}")
     else:
@@ -973,13 +969,14 @@ elif mode == "📊 Phân tích hàng loạt":
         with st.spinner("Đang phân tích..."):
             batch.analyze_batch(progress_callback=update_progress)
         
+        progress_bar.empty()
         status_text.text("✅ Hoàn thành!")
         
         # Lấy kết quả
         df = batch.get_dataframe()
         summary = batch.get_summary()
         
-        if not df.empty:
+        if df is not None and not df.empty:
             # Tóm tắt
             st.markdown("### 📊 Tóm tắt Kết quả")
             
@@ -1165,6 +1162,9 @@ elif mode == "📊 Phân tích hàng loạt":
                 filename = f"stock_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 batch.save_to_excel(filename)
                 st.success(f"✅ Đã lưu vào file: {filename}")
+        else:
+            st.error("❌ Không có kết quả phân tích. Có thể do lỗi kết nối hoặc mã cổ phiếu không hợp lệ.")
+            st.info("💡 Hãy thử lại với các mã cổ phiếu khác hoặc kiểm tra kết nối internet.")
 
 elif mode == "🔍 Quét thị trường":
     st.header("🔍 Quét Thị Trường - Tìm Cơ Hội")
@@ -1517,6 +1517,11 @@ elif mode == "💼 Danh mục của tôi":
         users_config = load_users_config()
         users = users_config.get("users", {})
         
+        # Kiểm tra nếu không có users
+        if not users:
+            st.error("⚠️ Không tìm thấy cấu hình users. Vui lòng tạo file users_config.json từ users_config.example.json")
+            st.stop()
+        
         # Tạo mapping: full_name -> username
         user_display = {user_data["full_name"]: username for username, user_data in users.items()}
         
@@ -1530,11 +1535,12 @@ elif mode == "💼 Danh mục của tôi":
                 selected_display = st.selectbox(
                     "Tài khoản",
                     options=list(user_display.keys()),
+                    index=0 if user_display else None,
                     help="Chọn tài khoản của bạn"
                 )
                 
                 # Lấy username từ full_name
-                username = user_display[selected_display]
+                username = user_display.get(selected_display) if selected_display else None
                 
                 password = st.text_input(
                     "Mật khẩu",

@@ -3,7 +3,7 @@ Module sinh tín hiệu mua/bán dựa trên các chỉ báo kỹ thuật
 """
 import pandas as pd
 import numpy as np
-from top_stocks import get_sector, SECTOR_MAPPING
+from src.utils.top_stocks import get_sector, SECTOR_MAPPING
 
 
 class SignalGenerator:

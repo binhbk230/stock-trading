@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from vnstock import Vnstock
-from technical_indicators import TechnicalIndicators
+from src.core.technical_indicators import TechnicalIndicators
 
 
 class VNIndexAnalyzer:

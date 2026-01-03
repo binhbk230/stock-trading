@@ -7,12 +7,12 @@ import os
 from datetime import datetime
 from typing import List, Dict, Optional
 import pandas as pd
-from main import StockAnalyzer
+from src.core.stock_analyzer import StockAnalyzer
 
 
 def load_users_config() -> Dict:
     """Load cấu hình users từ file config"""
-    config_file = "users_config.json"
+    config_file = "config/users_config.json"
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
             return json.load(f)

@@ -5,10 +5,8 @@ Dựa trên phân tích kỹ thuật và tín hiệu
 import pandas as pd
 from datetime import datetime, timedelta
 from vnstock import Vnstock
-from technical_indicators import TechnicalIndicators
-from signal_generator import SignalGenerator
-from vnindex_analyzer import VNIndexAnalyzer
-from sector_analyzer import SectorAnalyzer
+from src.core.technical_indicators import TechnicalIndicators
+from src.core.signal_generator import SignalGenerator
 
 
 class StockAnalyzer:
@@ -117,6 +115,8 @@ class StockAnalyzer:
         if self.check_vnindex:
             print("\nĐang phân tích VNINDEX (1D)...")
             try:
+                # Lazy import to avoid circular dependency
+                from src.analyzers.vnindex_analyzer import VNIndexAnalyzer
                 self.vnindex_analyzer = VNIndexAnalyzer(
                     start_date=self.start_date,
                     end_date=self.end_date,
@@ -133,6 +133,8 @@ class StockAnalyzer:
         if self.check_sector:
             print("\nĐang phân tích ngành của cổ phiếu...")
             try:
+                # Lazy import to avoid circular dependency
+                from src.analyzers.sector_analyzer import SectorAnalyzer
                 self.sector_analyzer = SectorAnalyzer(days_back=90)
                 # Tìm ngành của cổ phiếu
                 found_sector = None

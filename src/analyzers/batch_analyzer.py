@@ -5,9 +5,9 @@ import pandas as pd
 from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from main import StockAnalyzer
-from vnindex_analyzer import VNIndexAnalyzer
-from top_stocks import TOP_100_STOCKS, get_sector
+from src.core.stock_analyzer import StockAnalyzer
+from src.analyzers.vnindex_analyzer import VNIndexAnalyzer
+from src.utils.top_stocks import TOP_100_STOCKS, get_sector
 
 
 class BatchAnalyzer:
@@ -63,7 +63,7 @@ class BatchAnalyzer:
             analyzer.calculate_indicators()
             
             # Phân tích tín hiệu với VNINDEX status đã lấy sẵn
-            from signal_generator import SignalGenerator
+            from src.core.signal_generator import SignalGenerator
             analyzer.signal_gen = SignalGenerator(analyzer.indicators.df, self.vnindex_status, symbol=symbol)
             result = analyzer.signal_gen.get_overall_signal()
             
@@ -114,6 +114,7 @@ class BatchAnalyzer:
                 'bb_lower': latest.get('bb_lower', None),
                 'stoch_k': latest.get('stoch_k', None),
                 'stoch_d': latest.get('stoch_d', None),
+                'details': result.get('details', None),
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'vnindex_warning': result.get('vnindex_warning', None)
             }
