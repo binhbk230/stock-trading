@@ -133,6 +133,11 @@ class VNIndexAnalyzer:
                 else:
                     # Fallback: dùng ngày hiện tại
                     self.last_update = datetime.now()
+                
+                # Ensure timezone-naive datetime
+                if hasattr(self.last_update, 'tzinfo') and self.last_update.tzinfo is not None:
+                    self.last_update = self.last_update.replace(tzinfo=None)
+                    
             except Exception as e:
                 # Nếu không parse được, dùng datetime hiện tại
                 print(f"⚠️ Không thể xác định thời gian dữ liệu: {e}")
@@ -143,12 +148,22 @@ class VNIndexAnalyzer:
             self.interval = used_interval if used_interval else self.interval
             
             # Hiển thị thông tin dữ liệu
-            data_age = (datetime.now() - self.last_update).total_seconds() / 60
-            if data_age < 60:
-                print(f"✅ Dữ liệu VNINDEX ({used_interval}): {len(df)} điểm, cập nhật {data_age:.0f} phút trước")
-            else:
-                hours_age = data_age / 60
-                print(f"✅ Dữ liệu VNINDEX ({used_interval}): {len(df)} điểm, cập nhật {hours_age:.1f} giờ trước")
+            try:
+                # Ensure last_update is a datetime and handle timezone issues
+                if self.last_update is not None:
+                    # Convert to timezone-naive if needed
+                    last_update_naive = self.last_update.replace(tzinfo=None) if hasattr(self.last_update, 'replace') else self.last_update
+                    data_age = (datetime.now() - last_update_naive).total_seconds() / 60
+                    
+                    if data_age < 60:
+                        print(f"✅ Dữ liệu VNINDEX ({used_interval or self.interval}): {len(df)} điểm, cập nhật {data_age:.0f} phút trước")
+                    else:
+                        hours_age = data_age / 60
+                        print(f"✅ Dữ liệu VNINDEX ({used_interval or self.interval}): {len(df)} điểm, cập nhật {hours_age:.1f} giờ trước")
+                else:
+                    print(f"✅ Dữ liệu VNINDEX ({used_interval or self.interval}): {len(df)} điểm")
+            except Exception as e:
+                print(f"✅ Dữ liệu VNINDEX ({used_interval or self.interval}): {len(df)} điểm")
             
             return df
             
@@ -417,17 +432,21 @@ class VNIndexAnalyzer:
                 is_today = (data_datetime.strftime('%Y-%m-%d') == today)
                 
                 # Tính độ cũ của dữ liệu
-                data_age_minutes = (datetime.now() - data_datetime.replace(tzinfo=None)).total_seconds() / 60
-                
-                if self.interval in ['15m', '30m', '1H']:
-                    # Với intraday, cảnh báo nếu cũ hơn 30 phút
-                    if data_age_minutes < 15:
-                        data_age_warning = f"🟢 Dữ liệu mới ({data_age_minutes:.0f} phút trước)"
-                    elif data_age_minutes < 60:
-                        data_age_warning = f"🟡 Dữ liệu {data_age_minutes:.0f} phút trước"
-                    else:
-                        hours = data_age_minutes / 60
-                        data_age_warning = f"🔴 Dữ liệu {hours:.1f} giờ trước (cũ)"
+                try:
+                    data_datetime_naive = data_datetime.replace(tzinfo=None) if hasattr(data_datetime, 'replace') else data_datetime
+                    data_age_minutes = (datetime.now() - data_datetime_naive).total_seconds() / 60
+                    
+                    if self.interval in ['15m', '30m', '1H']:
+                        # Với intraday, cảnh báo nếu cũ hơn 30 phút
+                        if data_age_minutes < 15:
+                            data_age_warning = f"🟢 Dữ liệu mới ({data_age_minutes:.0f} phút trước)"
+                        elif data_age_minutes < 60:
+                            data_age_warning = f"🟡 Dữ liệu {data_age_minutes:.0f} phút trước"
+                        else:
+                            hours = data_age_minutes / 60
+                            data_age_warning = f"🔴 Dữ liệu {hours:.1f} giờ trước (cũ)"
+                except Exception as e:
+                    data_age_warning = None
                 else:
                     # Với daily, cảnh báo theo ngày
                     if not is_today:
