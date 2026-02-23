@@ -124,7 +124,12 @@ class VNIndexAnalyzer:
                 if 'time' in df.columns:
                     last_time = df['time'].iloc[-1]
                     if isinstance(last_time, str):
-                        self.last_update = pd.to_datetime(last_time)
+                        parsed_time = pd.to_datetime(last_time)
+                        # Force timezone-naive để tránh conflict giữa server và local
+                        if hasattr(parsed_time, 'tz_localize'):
+                            self.last_update = parsed_time.tz_localize(None) if parsed_time.tzinfo else parsed_time
+                        else:
+                            self.last_update = parsed_time.replace(tzinfo=None) if hasattr(parsed_time, 'tzinfo') and parsed_time.tzinfo else parsed_time
                     else:
                         self.last_update = last_time
                 # Nếu index là datetime
@@ -134,9 +139,14 @@ class VNIndexAnalyzer:
                     # Fallback: dùng ngày hiện tại
                     self.last_update = datetime.now()
                 
-                # Ensure timezone-naive datetime
+                # Ensure timezone-naive datetime (double-check)
                 if hasattr(self.last_update, 'tzinfo') and self.last_update.tzinfo is not None:
                     self.last_update = self.last_update.replace(tzinfo=None)
+                elif hasattr(self.last_update, 'tz_localize'):
+                    try:
+                        self.last_update = self.last_update.tz_localize(None)
+                    except:
+                        pass
                     
             except Exception as e:
                 # Nếu không parse được, dùng datetime hiện tại
@@ -310,24 +320,34 @@ class VNIndexAnalyzer:
             # Kiểm tra xem có phải đang trong phiên giao dịch không (cho 1D)
             is_intraday = False
             if self.interval == '1D' and self.last_update:
-                from datetime import datetime, time
-                
-                # Lấy ngày và giờ hiện tại
-                now = datetime.now()
-                
-                # Lấy ngày của dữ liệu
-                if isinstance(self.last_update, str):
-                    update_date = pd.to_datetime(self.last_update).date()
-                else:
-                    update_date = self.last_update.date()
-                
-                # Nếu dữ liệu là của hôm nay VÀ giờ hiện tại trong khung giao dịch
-                # → Đang trong phiên (dữ liệu chưa đủ)
-                market_open = time(9, 0)
-                market_close = time(15, 0)
-                
-                if update_date == now.date() and market_open <= now.time() < market_close:
-                    is_intraday = True
+                try:
+                    from datetime import datetime, time
+                    
+                    # Lấy ngày và giờ hiện tại
+                    now = datetime.now()
+                    
+                    # Lấy ngày của dữ liệu
+                    if isinstance(self.last_update, str):
+                        parsed = pd.to_datetime(self.last_update)
+                        # Remove timezone nếu có
+                        if hasattr(parsed, 'tz_localize'):
+                            parsed = parsed.tz_localize(None) if parsed.tzinfo else parsed
+                        elif hasattr(parsed, 'tzinfo') and parsed.tzinfo:
+                            parsed = parsed.replace(tzinfo=None)
+                        update_date = parsed.date()
+                    else:
+                        update_date = self.last_update.date()
+                    
+                    # Nếu dữ liệu là của hôm nay VÀ giờ hiện tại trong khung giao dịch
+                    # → Đang trong phiên (dữ liệu chưa đủ)
+                    market_open = time(9, 0)
+                    market_close = time(15, 0)
+                    
+                    if update_date == now.date() and market_open <= now.time() < market_close:
+                        is_intraday = True
+                except Exception as e:
+                    print(f"⚠️ Lỗi khi kiểm tra thời gian phiên: {e}")
+                    is_intraday = False
             
             if is_intraday:
                 # Trong phiên giao dịch, KHÔNG đánh giá volume (vì chưa đủ)
@@ -417,47 +437,59 @@ class VNIndexAnalyzer:
             data_age_warning = None
             
             if self.last_update is not None:
-                if isinstance(self.last_update, str):
-                    data_date = self.last_update
-                    data_datetime = pd.to_datetime(self.last_update)
-                else:
-                    data_datetime = self.last_update
-                    # Format hiển thị dựa trên interval
-                    if self.interval in ['15m', '30m', '1H']:
-                        data_date = self.last_update.strftime('%Y-%m-%d %H:%M')
-                    else:
-                        data_date = self.last_update.strftime('%Y-%m-%d')
-                
-                today = datetime.now().strftime('%Y-%m-%d')
-                is_today = (data_datetime.strftime('%Y-%m-%d') == today)
-                
-                # Tính độ cũ của dữ liệu
                 try:
-                    data_datetime_naive = data_datetime.replace(tzinfo=None) if hasattr(data_datetime, 'replace') else data_datetime
-                    data_age_minutes = (datetime.now() - data_datetime_naive).total_seconds() / 60
-                    
-                    if self.interval in ['15m', '30m', '1H']:
-                        # Với intraday, cảnh báo nếu cũ hơn 30 phút
-                        if data_age_minutes < 15:
-                            data_age_warning = f"🟢 Dữ liệu mới ({data_age_minutes:.0f} phút trước)"
-                        elif data_age_minutes < 60:
-                            data_age_warning = f"🟡 Dữ liệu {data_age_minutes:.0f} phút trước"
+                    if isinstance(self.last_update, str):
+                        data_date = self.last_update
+                        data_datetime = pd.to_datetime(self.last_update)
+                        # Remove timezone nếu có
+                        if hasattr(data_datetime, 'tz_localize'):
+                            data_datetime = data_datetime.tz_localize(None) if data_datetime.tzinfo else data_datetime
+                        elif hasattr(data_datetime, 'tzinfo') and data_datetime.tzinfo:
+                            data_datetime = data_datetime.replace(tzinfo=None)
+                    else:
+                        data_datetime = self.last_update
+                        # Format hiển thị dựa trên interval
+                        if self.interval in ['15m', '30m', '1H']:
+                            data_date = self.last_update.strftime('%Y-%m-%d %H:%M')
                         else:
-                            hours = data_age_minutes / 60
-                            data_age_warning = f"🔴 Dữ liệu {hours:.1f} giờ trước (cũ)"
+                            data_date = self.last_update.strftime('%Y-%m-%d')
                 except Exception as e:
-                    data_age_warning = None
-                else:
-                    # Với daily, cảnh báo theo ngày
-                    if not is_today:
-                        try:
-                            days_ago = (datetime.now() - data_datetime.replace(tzinfo=None)).days
-                            if days_ago == 1:
-                                data_age_warning = "⏰ Dữ liệu từ ngày hôm qua (chưa có phiên hôm nay)"
-                            elif days_ago > 1:
-                                data_age_warning = f"⏰ Dữ liệu từ {days_ago} ngày trước (cũ)"
-                        except:
-                            data_age_warning = f"⏰ Dữ liệu từ ngày {data_date}"
+                    print(f"⚠️ Lỗi khi format thời gian: {e}")
+                    data_datetime = None
+                    data_date = None
+                
+                if data_datetime is not None:
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    is_today = (data_datetime.strftime('%Y-%m-%d') == today)
+                    
+                    # Tính độ cũ của dữ liệu
+                    try:
+                        data_datetime_naive = data_datetime.replace(tzinfo=None) if hasattr(data_datetime, 'replace') else data_datetime
+                        data_age_minutes = (datetime.now() - data_datetime_naive).total_seconds() / 60
+                        
+                        if self.interval in ['15m', '30m', '1H']:
+                            # Với intraday, cảnh báo nếu cũ hơn 30 phút
+                            if data_age_minutes < 15:
+                                data_age_warning = f"🟢 Dữ liệu mới ({data_age_minutes:.0f} phút trước)"
+                            elif data_age_minutes < 60:
+                                data_age_warning = f"🟡 Dữ liệu {data_age_minutes:.0f} phút trước"
+                            else:
+                                hours = data_age_minutes / 60
+                                data_age_warning = f"🔴 Dữ liệu {hours:.1f} giờ trước (cũ)"
+                        else:
+                            # Với daily, cảnh báo theo ngày
+                            if not is_today:
+                                try:
+                                    days_ago = (datetime.now() - data_datetime.replace(tzinfo=None)).days
+                                    if days_ago == 1:
+                                        data_age_warning = "⏰ Dữ liệu từ ngày hôm qua (chưa có phiên hôm nay)"
+                                    elif days_ago > 1:
+                                        data_age_warning = f"⏰ Dữ liệu từ {days_ago} ngày trước (cũ)"
+                                except:
+                                    data_age_warning = f"⏰ Dữ liệu từ ngày {data_date}"
+                    except Exception as e:
+                        print(f"⚠️ Lỗi khi tính độ cũ của dữ liệu: {e}")
+                        data_age_warning = None
             
             return {
                 'status': result['status'],
@@ -502,19 +534,25 @@ class VNIndexAnalyzer:
         
         # Hiển thị thời gian dữ liệu
         if self.last_update is not None:
-            if isinstance(self.last_update, str):
-                data_date_str = self.last_update
-            else:
-                data_date_str = self.last_update.strftime('%Y-%m-%d %H:%M:%S') if hasattr(self.last_update, 'strftime') else str(self.last_update)
-            
-            today = datetime.now().strftime('%Y-%m-%d')
-            is_today = data_date_str.startswith(today)
-            
-            if is_today:
-                print(f"⏰ Thời gian dữ liệu: {data_date_str} ✅ (Hôm nay)")
-            else:
-                print(f"⏰ Thời gian dữ liệu: {data_date_str} ⚠️ (Không phải hôm nay)")
-                print("   💡 Lưu ý: Dữ liệu chỉ cập nhật sau khi thị trường đóng cửa (15h)")
+            try:
+                if isinstance(self.last_update, str):
+                    data_date_str = self.last_update
+                else:
+                    data_date_str = self.last_update.strftime('%Y-%m-%d %H:%M:%S') if hasattr(self.last_update, 'strftime') else str(self.last_update)
+                
+                today = datetime.now().strftime('%Y-%m-%d')
+                is_today = data_date_str.startswith(today)
+                
+                if is_today:
+                    print(f"⏰ Thời gian dữ liệu: {data_date_str} ✅ (Hôm nay)")
+                else:
+                    print(f"⏰ Thời gian dữ liệu: {data_date_str} ⚠️ (Không phải hôm nay)")
+                    print("   💡 Lưu ý: Dữ liệu chỉ cập nhật sau khi thị trường đóng cửa (15h)")
+            except Exception as e:
+                print(f"⏰ Thời gian dữ liệu: Không xác định")
+                print(f"   ⚠️ Lỗi khi hiển thị thời gian: {e}")
+        else:
+            print(f"⏰ Thời gian dữ liệu: Không xác định")
         
         print(f"\n🎯 TÌNH TRẠNG: {result['status']}")
         print(f"📈 Điểm số: {result['score']:.0f}/100 ({result['percentage']:.1f}%)")
