@@ -14,6 +14,7 @@ from src.analyzers.batch_analyzer import BatchAnalyzer
 from src.analyzers.vnindex_analyzer import VNIndexAnalyzer
 from src.analyzers.sector_analyzer import SectorAnalyzer
 from src.core.portfolio_manager import PortfolioManager, verify_login, get_user_info, load_users_config
+from src.utils.vnstock_config import get_vnstock_config
 from src.utils.top_stocks import (
     TOP_100_STOCKS, VN30_STOCKS, MIDCAP_STOCKS, SMALLCAP_STOCKS,
     get_sector, get_all_sectors, get_stocks_by_sector, SECTOR_MAPPING
@@ -62,6 +63,28 @@ st.markdown("""
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/stock-share.png", width=150)
     st.title("⚙️ Cấu hình")
+    
+    # Hiển thị API status
+    vnstock_config = get_vnstock_config()
+    if vnstock_config.has_api_key():
+        st.success(f"✅ vnstock Community API")
+        st.caption(f"🚀 Tốc độ: ~{vnstock_config.get_rate_limit()} requests/phút")
+    else:
+        st.warning("⚠️ vnstock Guest API")
+        st.caption(f"🐌 Tốc độ: ~{vnstock_config.get_rate_limit()} requests/phút")
+        with st.expander("🚀 Nâng cấp miễn phí"):
+            st.markdown("""
+            **Nâng cấp lên Community (60 req/phút - FREE):**
+            1. Đăng ký tại: https://vnstocks.com/login
+            2. Lấy API key
+            3. Tạo file `.env` từ `.env.example`
+            4. Thêm: `VNSTOCK_API_KEY=your_key_here`
+            5. Khởi động lại app
+            
+            💡 Chi tiết: Xem file `docs/API_KEY_SETUP.md`
+            """)
+    
+    st.markdown("---")
     
     # Chọn interval cho VNINDEX
     st.markdown("### 📊 Khung thời gian VNINDEX")
@@ -153,7 +176,7 @@ try:
             st.markdown(f"""
             <div style="background-color: #f0f2f6; padding: 1rem; border-radius: 0.5rem; text-align: center; margin: 1rem 0;">
                 <h4>📊 VNINDEX: {status_color} {vnindex_summary['status']} {interval_badge}</h4>
-                <p>Giá: {vnindex_summary['current_price']:.2f} | Điểm: {vnindex_summary['percentage']:.0f}%</p>
+                <p>Giá: {f"{vnindex_summary['current_price']:.2f}" if vnindex_summary.get('current_price') is not None and vnindex_summary['current_price'] > 0 else 'N/A'} | Điểm: {vnindex_summary['percentage']:.0f}%</p>
                 {time_warning}
                 <p style="font-size: 0.9rem; margin-top: 0.5rem;">{vnindex_summary['recommendation']}</p>
                 {invest_advice}
@@ -413,7 +436,11 @@ if mode == "🎯 Phân tích đơn lẻ":
                             with col2:
                                 st.metric("Điểm", f"{vnindex_status['percentage']:.0f}%")
                             with col3:
-                                st.metric("Giá VNINDEX", f"{vnindex_status['current_price']:.2f}")
+                                if vnindex_status.get('current_price') is not None and vnindex_status['current_price'] > 0:
+                                    price_str = f"{vnindex_status['current_price']:.2f}"
+                                else:
+                                    price_str = "N/A"
+                                st.metric("Giá VNINDEX", price_str)
                             with col4:
                                 if vnindex_status.get('data_date'):
                                     date_label = "Hôm nay ✅" if vnindex_status.get('is_today') else "Ngày"
@@ -956,8 +983,8 @@ elif mode == "📊 Phân tích hàng loạt":
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Tạo batch analyzer
-        batch = BatchAnalyzer(selected_symbols, max_workers=5)
+        # Tạo batch analyzer (auto delay từ config)
+        batch = BatchAnalyzer(selected_symbols, max_workers=1)
         
         # Callback để cập nhật tiến độ
         def update_progress(completed, total, symbol):
@@ -1259,7 +1286,7 @@ elif mode == "🔍 Quét thị trường":
     if scan_btn and selected_symbols:
         with st.spinner(f"Đang quét {len(selected_symbols)} cổ phiếu..."):
             # Sử dụng danh sách đã chọn
-            batch = BatchAnalyzer(selected_symbols, max_workers=10)
+            batch = BatchAnalyzer(selected_symbols, max_workers=1)
             batch.analyze_batch()
             
             st.success("✅ Hoàn thành quét thị trường!")
@@ -1379,14 +1406,42 @@ elif mode == "🏭 Phân tích ngành":
         st.write("")
         analyze_btn = st.button("📊 Phân tích ngành", type="primary", use_container_width=True)
     
+    # Cảnh báo về thời gian
+    st.warning("""
+    ⏳ **Lưu ý:** Quá trình phân tích có thể mất 5-10 phút để tránh vượt giới hạn API (20 requests/phút).
+    Hệ thống sẽ tự động thêm delay 3.5 giây giữa các request để đảm bảo ổn định.
+    """)
+    
     if analyze_btn:
-        with st.spinner("Đang phân tích các ngành... Vui lòng đợi trong giây lát..."):
+        # Progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Tính tổng số mã cần phân tích
+        from src.analyzers.sector_analyzer import SectorAnalyzer
+        total_stocks = sum(len(symbols) for symbols in SectorAnalyzer.SECTORS.values())
+        
+        # Dùng list để tránh nonlocal scope issue
+        progress_state = {'processed': 0}
+        
+        def update_progress(sector_name, current, total):
+            progress_state['processed'] += 1
+            progress = progress_state['processed'] / total_stocks
+            progress_bar.progress(progress)
+            status_text.text(f"🔍 Đang phân tích: {sector_name} ({current}/{total}) - Tổng: {progress_state['processed']}/{total_stocks}")
+        
+        try:
+            status_text.text("🚀 Bắt đầu phân tích các ngành...")
             analyzer = SectorAnalyzer(days_back=days_back)
-            results = analyzer.analyze_all_sectors()
+            results = analyzer.analyze_all_sectors(progress_callback=update_progress)
             summary = analyzer.get_summary()
             ranked = analyzer.get_ranked_sectors()
             
-            st.success("✅ Hoàn thành phân tích các ngành!")
+            # Clear progress
+            progress_bar.empty()
+            status_text.empty()
+            
+            st.success(f"✅ Hoàn thành phân tích {len(results)} ngành với {analyzer.request_count} API requests!")
             
             # Tổng quan
             st.markdown("### 📊 Tổng quan các ngành")
@@ -1497,6 +1552,12 @@ elif mode == "🏭 Phân tích ngành":
                 
                 **Ngành ưu tiên:** {', '.join(summary['strong_sectors'] if summary['strong_sectors'] else ['Chưa có ngành nổi bật'])}
                 """)
+        
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error(f"❌ Lỗi khi phân tích ngành: {str(e)}")
+            st.info("💡 Nếu gặp lỗi rate limit, vui lòng đợi 1 phút và thử lại.")
 
 # Chế độ Danh mục của tôi (Portfolio)
 elif mode == "💼 Danh mục của tôi":

@@ -10,6 +10,9 @@ from src.core.technical_indicators import TechnicalIndicators
 from typing import Dict, List, Tuple
 import warnings
 import logging
+import time
+from src.utils.rate_limiter import get_rate_limiter
+from src.utils.vnstock_config import create_vnstock, get_default_delay
 warnings.filterwarnings('ignore')
 
 # Giảm mức độ logging của vnstock
@@ -37,45 +40,80 @@ class SectorAnalyzer:
         'Xây dựng': ['CTD', 'HBC', 'VCG', 'LCG'],
     }
     
-    def __init__(self, days_back=90):
+    def __init__(self, days_back=90, delay_between_requests=None):
         """
         Khởi tạo SectorAnalyzer
         
         Args:
             days_back: Số ngày lịch sử để phân tích (mặc định 90 ngày)
+            delay_between_requests: Delay giữa các requests (giây), None = auto từ config
         """
         self.days_back = days_back
         self.end_date = datetime.now()
         self.start_date = self.end_date - timedelta(days=days_back)
         self.sector_results = {}
+        # Auto delay từ config nếu không chỉ định
+        self.delay_between_requests = delay_between_requests if delay_between_requests is not None else get_default_delay()
+        self.request_count = 0
+        self.last_request_time = None
+        self.rate_limiter = get_rate_limiter()  # Global rate limiter
         
-    def _fetch_stock_data(self, symbol: str) -> pd.DataFrame:
-        """Lấy dữ liệu lịch sử của một mã cổ phiếu"""
-        try:
-            # Sử dụng Vnstock nhưng tắt company check
-            stock = Vnstock().stock(symbol=symbol, source='VCI')
-            
-            # Chỉ lấy dữ liệu quote, không cần company info
-            df = stock.quote.history(
-                start=self.start_date.strftime('%Y-%m-%d'),
-                end=self.end_date.strftime('%Y-%m-%d'),
-                interval='1D'
-            )
-            
-            if df is not None and len(df) > 0:
-                # Chuẩn hóa tên cột về lowercase
-                df.columns = df.columns.str.lower()
-                print(f"  ✓ {symbol}: {len(df)} ngày")
-                return df
-            print(f"  ✗ {symbol}: Rỗng")
-            return None
-        except Exception as e:
-            error_msg = str(e)
-            # Bỏ qua các lỗi không quan trọng
-            if any(skip in error_msg.lower() for skip in ['not a stock', 'not found', 'invalid', 'company']):
+    def _rate_limit_delay(self):
+        """Thêm delay để tránh vượt rate limit (sử dụng global rate limiter)"""
+        self.rate_limiter.wait_if_needed(self.delay_between_requests)
+    
+    def _fetch_stock_data(self, symbol: str, retry_count=3) -> pd.DataFrame:
+        """Lấy dữ liệu lịch sử của một mã cổ phiếu với retry logic"""
+        for attempt in range(retry_count):
+            try:
+                # Rate limiting
+                self._rate_limit_delay()
+                
+                # Sử dụng Vnstock với config
+                stock = create_vnstock(symbol)
+                
+                # Chỉ lấy dữ liệu quote, không cần company info
+                df = stock.quote.history(
+                    start=self.start_date.strftime('%Y-%m-%d'),
+                    end=self.end_date.strftime('%Y-%m-%d'),
+                    interval='1D'
+                )
+                
+                if df is not None and len(df) > 0:
+                    # Chuẩn hóa tên cột về lowercase
+                    df.columns = df.columns.str.lower()
+                    print(f"  ✓ {symbol}: {len(df)} ngày")
+                    return df
+                print(f"  ✗ {symbol}: Rỗng")
                 return None
-            print(f"  ✗ {symbol}: {error_msg[:50]}")
-            return None
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Bỏ qua các lỗi không quan trọng
+                if any(skip in error_msg.lower() for skip in ['not a stock', 'not found', 'invalid', 'company']):
+                    return None
+                
+                # Nếu gặp rate limit, wait và retry
+                if 'rate limit' in error_msg.lower() or 'api request limit' in error_msg.lower() or 'maximum' in error_msg.lower():
+                    if attempt < retry_count - 1:
+                        wait_time = 45 if attempt == 0 else 60  # Wait 45s first, then 60s
+                        print(f"  ⏳ {symbol}: Rate limit - chờ {wait_time}s (lần {attempt + 1}/{retry_count})...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"  ✗ {symbol}: Vượt rate limit sau {retry_count} lần thử")
+                        return None
+                
+                # Lỗi khác
+                if attempt < retry_count - 1:
+                    print(f"  ⚠ {symbol}: Lỗi (thử lại {attempt + 2}/{retry_count})...")
+                    time.sleep(2)
+                else:
+                    print(f"  ✗ {symbol}: {error_msg[:50]}")
+                    return None
+        
+        return None
     
     def _analyze_stock_trend(self, df: pd.DataFrame) -> Dict:
         """
@@ -173,23 +211,29 @@ class SectorAnalyzer:
         except Exception as e:
             return {'score': 0, 'details': f'Lỗi: {str(e)}'}
     
-    def analyze_sector(self, sector_name: str, symbols: List[str]) -> Dict:
+    def analyze_sector(self, sector_name: str, symbols: List[str], progress_callback=None) -> Dict:
         """
         Phân tích một nhóm ngành
         
         Args:
             sector_name: Tên nhóm ngành
             symbols: Danh sách mã cổ phiếu trong ngành
+            progress_callback: Callback function để báo tiến trình (nhận sector_name, current, total)
             
         Returns:
             Dict chứa điểm số và chi tiết của ngành
         """
         print(f"\n🔍 Đang phân tích ngành: {sector_name}...")
+        print(f"   ⏱️ Delay: {self.delay_between_requests}s giữa các request (tránh rate limit)")
         
         scores = []
         stock_details = []
         
-        for symbol in symbols:
+        for idx, symbol in enumerate(symbols, 1):
+            if progress_callback:
+                progress_callback(sector_name, idx, len(symbols))
+            
+            print(f"  [{idx}/{len(symbols)}] {symbol}...", end=' ')
             df = self._fetch_stock_data(symbol)
             if df is not None and len(df) > 0:
                 result = self._analyze_stock_trend(df)
@@ -199,9 +243,11 @@ class SectorAnalyzer:
                     'score': result['score'],
                     'details': result['details']
                 })
-                print(f"    {symbol}: {result['score']:.0f} điểm - {result['details'][:50]}...")
+                print(f"{result['score']:.0f} điểm")
+            else:
+                print("Bỏ qua")
         
-        print(f"  → Tổng: {len(scores)}/{len(symbols)} mã có dữ liệu")
+        print(f"  → Tổng: {len(scores)}/{len(symbols)} mã có dữ liệu | Tổng requests: {self.request_count}")
         
         if not scores:
             return {
@@ -236,22 +282,33 @@ class SectorAnalyzer:
             'stock_details': sorted(stock_details, key=lambda x: x['score'], reverse=True)
         }
     
-    def analyze_all_sectors(self) -> Dict[str, Dict]:
+    def analyze_all_sectors(self, progress_callback=None) -> Dict[str, Dict]:
         """
         Phân tích tất cả các nhóm ngành
         
+        Args:
+            progress_callback: Callback function để báo tiến trình
+            
         Returns:
             Dict với key là tên ngành, value là kết quả phân tích
         """
         print("=" * 80)
         print("📊 BẮT ĐẦU PHÂN TÍCH CÁC NHÓM NGÀNH")
+        print(f"⏱️ Delay: {self.delay_between_requests}s giữa các requests để tránh rate limit (20 req/phút)")
+        print(f"⏳ Ước tính thời gian: ~{len([s for symbols in self.SECTORS.values() for s in symbols]) * self.delay_between_requests / 60:.0f} phút")
         print("=" * 80)
         
         results = {}
+        start_time = time.time()
         
-        for sector_name, symbols in self.SECTORS.items():
-            result = self.analyze_sector(sector_name, symbols)
+        for idx, (sector_name, symbols) in enumerate(self.SECTORS.items(), 1):
+            print(f"\n[{idx}/{len(self.SECTORS)}] Ngành: {sector_name}")
+            result = self.analyze_sector(sector_name, symbols, progress_callback)
             results[sector_name] = result
+        
+        elapsed_time = time.time() - start_time
+        print(f"\n✅ Hoàn thành phân tích {len(self.SECTORS)} ngành trong {elapsed_time/60:.1f} phút")
+        print(f"📊 Tổng requests: {self.request_count}")
         
         self.sector_results = results
         return results

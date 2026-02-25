@@ -7,12 +7,15 @@ import numpy as np
 from datetime import datetime, timedelta
 from vnstock import Vnstock
 from src.core.technical_indicators import TechnicalIndicators
+import time
+from src.utils.rate_limiter import get_rate_limiter
+from src.utils.vnstock_config import create_vnstock, get_default_delay
 
 
 class VNIndexAnalyzer:
     """Lớp phân tích chỉ số VNINDEX"""
     
-    def __init__(self, start_date=None, end_date=None, interval='1D'):
+    def __init__(self, start_date=None, end_date=None, interval='1D', delay_between_requests=None):
         """
         Khởi tạo công cụ phân tích VNINDEX
         
@@ -20,6 +23,7 @@ class VNIndexAnalyzer:
             start_date: Ngày bắt đầu (mặc định 6 tháng trước)
             end_date: Ngày kết thúc (mặc định hôm nay)
             interval: Khung thời gian ('1D', '1H', '30m', '15m')
+            delay_between_requests: Delay giữa các requests (giây), None = auto từ config
         """
         if end_date is None:
             self.end_date = datetime.now().strftime('%Y-%m-%d')
@@ -41,6 +45,14 @@ class VNIndexAnalyzer:
         self.indicators = None
         self.last_update = None
         self.last_fetch_time = None
+        # Auto delay từ config nếu không chỉ định
+        self.delay_between_requests = delay_between_requests if delay_between_requests is not None else get_default_delay()
+        self.last_request_time = None
+        self.rate_limiter = get_rate_limiter()  # Global rate limiter
+    
+    def _rate_limit_delay(self):
+        """Thêm delay để tránh vượt rate limit (sử dụng global rate limiter)"""
+        self.rate_limiter.wait_if_needed(self.delay_between_requests)
     
     def fetch_data(self, force_refresh=False):
         """
@@ -64,7 +76,7 @@ class VNIndexAnalyzer:
             
             # Sử dụng vnstock để lấy dữ liệu VNINDEX (chỉ số thị trường)
             # VNINDEX là chỉ số, không phải cổ phiếu, nên cần xử lý khác
-            stock = Vnstock().stock(symbol='VNINDEX', source='VCI')
+            stock = create_vnstock('VNINDEX')
             
             # Danh sách interval để thử (ưu tiên interval được yêu cầu)
             intervals_to_try = [self.interval]
@@ -80,6 +92,7 @@ class VNIndexAnalyzer:
             for interval in intervals_to_try:
                 try:
                     print(f"📊 Đang thử lấy VNINDEX với interval {interval}...")
+                    self._rate_limit_delay()  # Rate limiting
                     df = stock.quote.history(
                         start=self.start_date,
                         end=self.end_date,
@@ -91,13 +104,19 @@ class VNIndexAnalyzer:
                             print(f"⚠️ Không hỗ trợ {self.interval}, sử dụng {interval}")
                         break
                 except Exception as e:
+                    error_msg = str(e)
+                    # Nếu gặp rate limit, chờ lâu hơn
+                    if 'rate limit' in error_msg.lower() or 'api request limit' in error_msg.lower():
+                        print(f"⚠️ Rate limit - chờ 60s...")
+                        time.sleep(60)
                     print(f"⚠️ Thất bại với interval {interval}: {e}")
                     continue
             
             # Nếu tất cả đều thất bại, thử với VN30
             if df is None or df.empty:
                 print("⚠️ Không thể lấy VNINDEX, thử VN30 làm proxy...")
-                stock = Vnstock().stock(symbol='VN30', source='VCI')
+                self._rate_limit_delay()  # Rate limiting
+                stock = create_vnstock('VN30')
                 df = stock.quote.history(
                     start=self.start_date,
                     end=self.end_date,
@@ -507,6 +526,8 @@ class VNIndexAnalyzer:
             
         except Exception as e:
             print(f"⚠️ Lỗi khi phân tích VNINDEX: {str(e)}")
+            import traceback
+            traceback.print_exc()
             # Trả về kết quả mặc định nếu có lỗi
             return {
                 'status': 'UNKNOWN',
@@ -514,8 +535,12 @@ class VNIndexAnalyzer:
                 'percentage': 50,
                 'recommendation': '⚠️ Không thể phân tích VNINDEX, hãy thận trọng',
                 'allow_buy': True,  # Vẫn cho phép nếu không lấy được dữ liệu
-                'current_price': None,
-                'conditions': ['⚠️ Không thể lấy dữ liệu VNINDEX']
+                'current_price': 0,  # Set 0 thay vì None để tránh lỗi format
+                'conditions': ['⚠️ Không thể lấy dữ liệu VNINDEX'],
+                'data_date': None,
+                'is_today': False,
+                'data_age_warning': None,
+                'interval': self.interval
             }
     
     def print_report(self):
@@ -556,7 +581,10 @@ class VNIndexAnalyzer:
         
         print(f"\n🎯 TÌNH TRẠNG: {result['status']}")
         print(f"📈 Điểm số: {result['score']:.0f}/100 ({result['percentage']:.1f}%)")
-        print(f"💹 Giá hiện tại: {result['current_price']:.2f}")
+        if result.get('current_price') and result['current_price'] > 0:
+            print(f"💹 Giá hiện tại: {result['current_price']:.2f}")
+        else:
+            print(f"💹 Giá hiện tại: N/A")
         
         print(f"\n📋 CÁC CHỈ TIÊU:")
         for condition in result['conditions']:
