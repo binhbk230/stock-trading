@@ -8,30 +8,34 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.core.stock_analyzer import StockAnalyzer
 from src.analyzers.vnindex_analyzer import VNIndexAnalyzer
 from src.utils.top_stocks import TOP_100_STOCKS, get_sector
+from src.utils.vnstock_config import get_default_delay
 
 
 class BatchAnalyzer:
     """Lớp phân tích hàng loạt nhiều cổ phiếu"""
     
-    def __init__(self, symbols=None, max_workers=5, check_vnindex=True):
+    def __init__(self, symbols=None, max_workers=1, check_vnindex=True, delay_between_requests=None):
         """
         Khởi tạo batch analyzer
         
         Args:
             symbols: List mã cổ phiếu cần phân tích (mặc định top 100)
-            max_workers: Số luồng xử lý song song
+            max_workers: Số luồng xử lý song song (mặc định 1 để tránh rate limit)
             check_vnindex: Có kiểm tra VNINDEX hay không
+            delay_between_requests: Delay giữa các requests (giây), None = auto từ config
         """
         self.symbols = symbols if symbols else TOP_100_STOCKS
         self.max_workers = max_workers
         self.results = []
         self.check_vnindex = check_vnindex
         self.vnindex_status = None
+        # Auto delay từ config nếu không chỉ định
+        self.delay_between_requests = delay_between_requests if delay_between_requests is not None else get_default_delay()
         
         # Lấy thông tin VNINDEX một lần (sử dụng interval 1D mặc định)
         if self.check_vnindex:
             try:
-                vnindex = VNIndexAnalyzer(interval='1D')
+                vnindex = VNIndexAnalyzer(interval='1D', delay_between_requests=delay_between_requests)
                 vnindex.fetch_data()
                 self.vnindex_status = vnindex.get_summary()
             except:

@@ -7,12 +7,15 @@ from datetime import datetime, timedelta
 from vnstock import Vnstock
 from src.core.technical_indicators import TechnicalIndicators
 from src.core.signal_generator import SignalGenerator
+import time
+from src.utils.rate_limiter import get_rate_limiter
+from src.utils.vnstock_config import create_vnstock, get_default_delay
 
 
 class StockAnalyzer:
     """Lớp phân tích và gợi ý giao dịch cổ phiếu"""
     
-    def __init__(self, symbol, start_date=None, end_date=None, check_vnindex=True, check_sector=True):
+    def __init__(self, symbol, start_date=None, end_date=None, check_vnindex=True, check_sector=True, delay_between_requests=None):
         """
         Khởi tạo công cụ phân tích
         
@@ -22,10 +25,13 @@ class StockAnalyzer:
             end_date: Ngày kết thúc (mặc định hôm nay)
             check_vnindex: Có kiểm tra VNINDEX hay không (mặc định True)
             check_sector: Có phân tích ngành hay không (mặc định True)
+            delay_between_requests: Delay giữa các requests (giây), None = auto từ config
         """
         self.symbol = symbol.upper()
         self.check_vnindex = check_vnindex
         self.check_sector = check_sector
+        # Auto delay từ config nếu không chỉ định
+        self.delay_between_requests = delay_between_requests if delay_between_requests is not None else get_default_delay()
         
         if end_date is None:
             self.end_date = datetime.now().strftime('%Y-%m-%d')
@@ -45,6 +51,12 @@ class StockAnalyzer:
         self.vnindex_status = None
         self.sector_analyzer = None
         self.sector_info = None
+        self.last_request_time = None
+        self.rate_limiter = get_rate_limiter()  # Global rate limiter
+    
+    def _rate_limit_delay(self):
+        """Thêm delay để tránh vượt rate limit (sử dụng global rate limiter)"""
+        self.rate_limiter.wait_if_needed(self.delay_between_requests)
     
     def fetch_data(self):
         """
@@ -55,8 +67,11 @@ class StockAnalyzer:
         """
         print(f"Đang tải dữ liệu {self.symbol}...")
         try:
-            # Sử dụng vnstock 3.x API
-            stock = Vnstock().stock(symbol=self.symbol, source='VCI')
+            # Rate limiting
+            self._rate_limit_delay()
+            
+            # Sử dụng vnstock 3.x API với config
+            stock = create_vnstock(self.symbol)
             df = stock.quote.history(
                 start=self.start_date,
                 end=self.end_date,
@@ -120,7 +135,8 @@ class StockAnalyzer:
                 self.vnindex_analyzer = VNIndexAnalyzer(
                     start_date=self.start_date,
                     end_date=self.end_date,
-                    interval='1D'  # Sử dụng interval 1D mặc định
+                    interval='1D',  # Sử dụng interval 1D mặc định
+                    delay_between_requests=self.delay_between_requests
                 )
                 self.vnindex_analyzer.fetch_data()
                 self.vnindex_status = self.vnindex_analyzer.get_summary()
@@ -135,7 +151,7 @@ class StockAnalyzer:
             try:
                 # Lazy import to avoid circular dependency
                 from src.analyzers.sector_analyzer import SectorAnalyzer
-                self.sector_analyzer = SectorAnalyzer(days_back=90)
+                self.sector_analyzer = SectorAnalyzer(days_back=90, delay_between_requests=self.delay_between_requests)
                 # Tìm ngành của cổ phiếu
                 found_sector = None
                 for sector_name, symbols in self.sector_analyzer.SECTORS.items():
